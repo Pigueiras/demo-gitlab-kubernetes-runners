@@ -1,0 +1,10 @@
+rbac:
+  create: true
+
+runners:
+  config: |
+    [[runners]]
+      [runners.kubernetes.pod_annotations]
+        gitlab_job_id                       = "$CI_JOB_ID"
+        gitlab_job_name                     = "$CI_JOB_NAME"
+        gitlab_project_path                 = "$CI_PROJECT_PATH"

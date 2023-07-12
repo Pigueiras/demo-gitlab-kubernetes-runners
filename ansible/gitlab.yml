@@ -1,0 +1,55 @@
+- name: "Install GitLab"
+  hosts: "{{ host_reference }}"
+  become: yes
+  remote_user: ubuntu
+  become_user: root
+  tasks:
+    - name: Add 2G of swap
+      shell: |
+        /bin/dd if=/dev/zero of=/var/swap.1 bs=1M count=2048
+        /sbin/mkswap /var/swap.1
+        chmod 600 /var/swap.1
+        /sbin/swapon /var/swap.1
+      args:
+        creates: /var/swap.1
+    - name: Add swap to fstab
+      lineinfile:
+        path: /etc/fstab
+        line: "/var/swap.1   swap    swap    defaults        0   0"
+        create: yes
+    - name: Install Dependencies
+      apt:
+        pkg:
+          - jq
+          - curl
+          - openssh-server
+          - ca-certificates
+          - tzdata
+          - perl
+    - name: Add gitlab repo
+      shell: curl https://packages.gitlab.com/install/repositories/gitlab/gitlab-ee/script.deb.sh | sudo bash
+      args:
+        creates: "/etc/apt/sources.list.d/gitlab_gitlab-ee.list"
+    - name: Install Gitlab
+      apt:
+        pkg:
+          - gitlab-ee
+    - name: Add configuration in gitlab.rb
+      template:
+        src: templates/gitlab.rb.j2
+        dest: /etc/gitlab/gitlab.rb
+        owner: root
+        group: root
+        mode: "0600"
+      register: gitlab_config
+    - name: Run gitlab-ctl reconfigure
+      when: gitlab_config.changed
+      shell: "gitlab-ctl reconfigure"
+    - name: Wait until HTTP status is 200
+      uri:
+        url: "http://{{ gitlab_public_dns }}"
+      register: _result
+      until: _result.status == 200
+      retries: 24 # Retries for 24 * 5 seconds = 120 seconds = 2 minutes
+      delay: 5 # Every 5 seconds
+      when: gitlab_config.changed

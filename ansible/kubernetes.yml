@@ -1,0 +1,112 @@
+- name: "Install K3S + Prometheus + Grafana + GitLab runners"
+  hosts: "{{ host_reference }}"
+  become: yes
+  remote_user: ubuntu
+  become_user: root
+  tasks:
+    - name: Install pkgs
+      apt:
+        pkg:
+          - jq
+          - git
+    - name: Install k3s
+      shell: |
+        curl -sfL https://get.k3s.io | sh -
+        chown ubuntu:ubuntu /etc/rancher/k3s/k3s.yaml
+      args:
+        creates: /etc/rancher/k3s/k3s.yaml
+    - name: Install helm
+      shell: |
+        curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        chmod 700 get_helm.sh
+        ./get_helm.sh
+      args:
+        creates: /usr/local/bin/helm
+    - name: Helm List
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+      command: helm list
+      register: helm_list
+    - name: Copy helm values
+      copy:
+        src: files/helm/
+        dest: /home/ubuntu/helm-values/
+        owner: root
+        group: root
+        mode: "0600"
+    - name: Copy grafana dashboard
+      copy:
+        src: files/grafana/
+        dest: /home/ubuntu/grafana-dashboards/
+        owner: root
+        group: root
+        mode: "0600"
+    - name: Install Prometheus
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      shell: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo update
+        helm install prometheus prometheus-community/prometheus -f /home/ubuntu/helm-values/prometheus-values.yaml
+      when: "'prometheus' not in helm_list.stdout"
+    - name: Install Grafana
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      shell: |
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+        helm install grafana grafana/grafana \
+          -f /home/ubuntu/helm-values/grafana-values.yaml \
+          --set-file dashboards.default.runner-dashboard.json=/home/ubuntu/grafana-dashboards/runner-dashboard.json \
+      when: "'grafana' not in helm_list.stdout"
+    - name: Get token from GitLab to register Runner
+      shell: |
+        BEARER=$(curl --data 'grant_type=password&username=root&password=mydemo123'  --request POST "http://{{ gitlab_public_dns }}/oauth/token" | jq .access_token | tr -d '"')
+        curl --header "Authorization: Bearer $BEARER" "http://{{ gitlab_public_dns }}/api/v4/user/runners" -d "runner_type=instance_type" | jq .token | tr -d '"'
+      when: "'gitlab' not in helm_list.stdout"
+      register: runner_token
+    - name: Install GitLab runner
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      shell: |
+        helm repo add gitlab https://charts.gitlab.io
+        helm repo update
+        helm install gitlab-runner gitlab/gitlab-runner \
+          --set runnerToken={{ runner_token.stdout }} \
+          --set gitlabUrl=http://{{ gitlab_public_dns }} \
+          -f /home/ubuntu/helm-values/gitlab-runner-values.yaml
+      when: "'gitlab' not in helm_list.stdout"
+    - name: Copy gitlab test project
+      copy:
+        src: files/gitlab/
+        dest: /home/ubuntu/test_project/
+        owner: root
+        group: root
+        mode: "0644"
+      register: copy_gitlab_repo
+    - name: Create project in GitLab instance
+      shell: |
+        BEARER=$(curl --data 'grant_type=password&username=root&password=mydemo123'  --request POST "http://{{ gitlab_public_dns }}/oauth/token" | jq .access_token | tr -d '"')
+        echo $BEARER
+        curl -XPOST \
+            --header "Authorization: Bearer $BEARER" \
+            --header "Content-Type: application/json" \
+            --data '{
+                "name": "mytest",
+                "path": "mytest",
+                "initialize_with_readme": "false"
+            }' \
+            "http://{{ gitlab_public_dns }}/api/v4/projects"
+      when: copy_gitlab_repo.changed
+    - name: Push test repository
+      shell:
+        cmd: |
+          cd /home/ubuntu/test_project/
+          git init --initial-branch=main
+          git remote add origin http://root:mydemo123@{{ gitlab_public_dns }}/root/mytest.git
+          git add .
+          git commit -m "Initial commit"
+          git push --set-upstream origin main
+        chdir: /home/ubuntu/test_project/
+      when: copy_gitlab_repo.changed

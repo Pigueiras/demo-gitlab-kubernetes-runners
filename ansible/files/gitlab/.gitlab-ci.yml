@@ -1,0 +1,9 @@
+consume_256mb:
+  image: python:3
+  script:
+    - python3 consume.py 256
+
+consume_512mb:
+  image: python:3
+  script:
+    - python3 consume.py 512

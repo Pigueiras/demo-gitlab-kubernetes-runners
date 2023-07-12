@@ -1,0 +1,9 @@
+server:
+  global:
+    scrape_interval: 10s
+
+kube-state-metrics:
+  # this allows matching gitlab CI jobs with their associated container
+  # in which they are running
+  metricAnnotationsAllowList:
+    - pods=[gitlab_job_id,gitlab_project_path,gitlab_job_name]
